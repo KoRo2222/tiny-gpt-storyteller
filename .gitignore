@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/tokenizer.json
+data/*.bin
+data/*.pt
+data/eval_history.jsonl
+CLAUDE.md
