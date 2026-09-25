@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 import json
 import re
 from pathlib import Path
@@ -44,6 +45,19 @@ def _bytes_to_unicode() -> dict[int, str]:
             cs.append(256 + n)
             n += 1
     return dict(zip(bs, (chr(c) for c in cs)))
+
+
+class _Desc:
+    """Heap key that orders pairs in reverse, so heapq (a min-heap) pops the
+    lexicographically largest pair first among equal counts."""
+
+    __slots__ = ("pair",)
+
+    def __init__(self, pair: tuple[str, str]) -> None:
+        self.pair = pair
+
+    def __lt__(self, other: "_Desc") -> bool:
+        return self.pair > other.pair
 
 
 class BPETokenizer:
@@ -104,23 +118,67 @@ class BPETokenizer:
                 word = self._to_byte_symbols(token)
                 word_freqs[word] = word_freqs.get(word, 0) + 1
 
+        words = list(word_freqs)
+        freqs = [word_freqs[w] for w in words]
+
+        # Pair counts are computed once, then kept up to date incrementally:
+        # a merge only touches the words that contain the merged pair, so only
+        # those words' pairs are subtracted and re-added. pair_to_words is an
+        # index from pair to candidate words (it may hold stale entries for
+        # words that no longer contain the pair; merging those is a no-op).
+        pair_counts = self._get_pair_counts(word_freqs)
+        pair_to_words: dict[tuple[str, str], set[int]] = {}
+        for idx, word in enumerate(words):
+            for pair in zip(word, word[1:]):
+                pair_to_words.setdefault(pair, set()).add(idx)
+
+        # Max-heap over (count, pair) with lazy deletion: an entry is valid
+        # only if its count still matches pair_counts. Ties break toward the
+        # lexicographically larger pair, same as max(key=(count, pair)).
+        heap = [(-count, _Desc(pair)) for pair, count in pair_counts.items()]
+        heapq.heapify(heap)
+
         self.merges = []
         num_merges = vocab_size - len(base_symbols)
         for i in range(num_merges):
-            pair_counts = self._get_pair_counts(word_freqs)
-            if not pair_counts:
+            best_pair = None
+            while heap:
+                neg_count, desc = heapq.heappop(heap)
+                if pair_counts.get(desc.pair) == -neg_count:
+                    best_pair, best_count = desc.pair, -neg_count
+                    break
+            if best_pair is None:
                 break
-            best_pair = max(pair_counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
             merged_symbol = "".join(best_pair)
-            word_freqs = {
-                self._merge_word(word, best_pair, merged_symbol): freq
-                for word, freq in word_freqs.items()
-            }
+            changed: set[tuple[str, str]] = set()
+            for idx in pair_to_words.pop(best_pair, ()):
+                word = words[idx]
+                new_word = self._merge_word(word, best_pair, merged_symbol)
+                if new_word == word:
+                    continue
+                freq = freqs[idx]
+                for pair in zip(word, word[1:]):
+                    pair_counts[pair] -= freq
+                    changed.add(pair)
+                for pair in zip(new_word, new_word[1:]):
+                    pair_counts[pair] = pair_counts.get(pair, 0) + freq
+                    pair_to_words.setdefault(pair, set()).add(idx)
+                    changed.add(pair)
+                words[idx] = new_word
+
+            for pair in changed:
+                count = pair_counts[pair]
+                if count > 0:
+                    heapq.heappush(heap, (-count, _Desc(pair)))
+                else:
+                    del pair_counts[pair]
+
             self.merges.append(best_pair)
             if verbose:
                 print(
                     f"merge {i + 1}/{num_merges}: {best_pair} -> "
-                    f"{merged_symbol!r} (count={pair_counts[best_pair]})"
+                    f"{merged_symbol!r} (count={best_count})"
                 )
 
         self.ranks = {pair: i for i, pair in enumerate(self.merges)}

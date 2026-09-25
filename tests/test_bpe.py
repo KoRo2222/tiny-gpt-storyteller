@@ -118,3 +118,43 @@ def test_japanese_roundtrip():
     tok.train(JA_CORPUS, vocab_size=300)
     for text in JA_CORPUS + ["　全角スペースとｶﾀｶﾅと１２３。\n\n次の夜。"]:
         assert tok.decode(tok.encode(text)) == text
+
+
+def _reference_merges(tok, texts, vocab_size):
+    """Naive BPE: recount every pair from scratch before each merge."""
+    word_freqs = {}
+    for text in texts:
+        for token in tok._pretokenize(text):
+            word = tok._to_byte_symbols(token)
+            word_freqs[word] = word_freqs.get(word, 0) + 1
+    merges = []
+    for _ in range(vocab_size - 256):
+        counts = tok._get_pair_counts(word_freqs)
+        if not counts:
+            break
+        best = max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        word_freqs = {
+            tok._merge_word(w, best, "".join(best)): f
+            for w, f in word_freqs.items()
+        }
+        merges.append(best)
+    return merges
+
+
+def test_incremental_training_matches_full_recount():
+    import random
+
+    rng = random.Random(0)
+    # Small alphabet -> many overlapping repeats ("aaaa") and count ties,
+    # which are the cases where incremental updates are easiest to get wrong.
+    random_texts = [
+        " ".join(
+            "".join(rng.choice("abあい") for _ in range(rng.randint(1, 8)))
+            for _ in range(20)
+        )
+        for _ in range(10)
+    ]
+    for texts in (CORPUS, JA_CORPUS, random_texts, ["aaaaaaa aaa aaaa"]):
+        tok = BPETokenizer()
+        tok.train(texts, vocab_size=400)
+        assert tok.merges == _reference_merges(BPETokenizer(), texts, 400)
