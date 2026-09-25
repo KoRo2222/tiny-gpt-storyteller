@@ -73,3 +73,48 @@ def test_vocab_size_below_256_rejected():
     except ValueError:
         return
     raise AssertionError("expected ValueError for vocab_size < 256")
+
+
+JA_CORPUS = [
+    "むかしむかし、ある国に王様がいました。王様は毎晩、物語を聞きました。",
+    "王様は言いました。「今夜も話をしておくれ。」",
+    "ドラゴンは王様の城にやってきました。すごーい、と子どもたちは言いました。",
+]
+
+
+def test_japanese_split_at_script_boundaries():
+    tok = BPETokenizer()
+    assert tok._pretokenize("むかし、王様がドラゴンを見た。") == [
+        "むかし", "、", "王様", "が", "ドラゴン", "を", "見", "た", "。",
+    ]
+
+
+def test_long_vowel_mark_stays_with_kana():
+    tok = BPETokenizer()
+    assert tok._pretokenize("すごーい") == ["すごーい"]
+    assert tok._pretokenize("スーパー") == ["スーパー"]
+
+
+def test_japanese_repeated_word_gets_single_token():
+    tok = BPETokenizer()
+    tok.train(JA_CORPUS, vocab_size=300)
+    # "王様" appears in every document, so BPE should merge its 6 UTF-8 bytes
+    # into one token.
+    assert len(tok.encode("王様")) == 1
+
+
+def test_learned_tokens_never_cross_script_boundaries():
+    tok = BPETokenizer()
+    tok.train(JA_CORPUS, vocab_size=400)
+    for token_id in range(256, len(tok.merges) + 256):
+        text = tok.decode([token_id])
+        if "�" in text:  # partial UTF-8 sequence; can't pretokenize
+            continue
+        assert tok._pretokenize(text) == [text], text
+
+
+def test_japanese_roundtrip():
+    tok = BPETokenizer()
+    tok.train(JA_CORPUS, vocab_size=300)
+    for text in JA_CORPUS + ["　全角スペースとｶﾀｶﾅと１２３。\n\n次の夜。"]:
+        assert tok.decode(tok.encode(text)) == text

@@ -4,10 +4,23 @@ import json
 import re
 from pathlib import Path
 
-# GPT-2's pre-tokenization pattern (ASCII-approximated: no \p{L}/\p{N} unicode
-# classes, since the training corpus is Python source code).
+# Character classes for pre-tokenization. Japanese has no spaces between
+# words, so script boundaries (hiragana / katakana / kanji / punctuation)
+# stand in for word boundaries. "ー" belongs to both kana classes so that
+# long vowels stay attached ("すごーい", "ドラゴン").
+_LATIN = "A-Za-zＡ-Ｚａ-ｚ"
+_DIGIT = "0-9０-９"
+_HIRAGANA = "ぁ-ゖゝゞー"
+_KATAKANA = "ァ-ヺーヽヾｦ-ﾟ"
+_KANJI = "一-鿿㐀-䶿々〆"
+
+# GPT-2's pre-tokenization pattern, extended with Japanese script classes.
 _SPLIT_PATTERN = re.compile(
-    r"""'s|'t|'re|'ve|'m|'ll|'d| ?[A-Za-z]+| ?[0-9]+| ?[^\sA-Za-z0-9]+|\s+(?!\S)|\s+"""
+    r"""'s|'t|'re|'ve|'m|'ll|'d"""
+    rf"""| ?[{_LATIN}]+| ?[{_DIGIT}]+"""
+    rf"""| ?[{_HIRAGANA}]+| ?[{_KATAKANA}]+| ?[{_KANJI}]+"""
+    rf"""| ?[^\s{_LATIN}{_DIGIT}{_HIRAGANA}{_KATAKANA}{_KANJI}]+"""
+    r"""|\s+(?!\S)|\s+"""
 )
 
 
