@@ -7,6 +7,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -40,6 +41,12 @@ def main() -> None:
         default=1 << 20,
         help="characters read from a corpus file at a time",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count() or 1,
+        help="processes used to pretokenize the corpus",
+    )
     args = parser.parse_args()
 
     corpus_dir = Path(args.corpus_dir)
@@ -52,6 +59,8 @@ def main() -> None:
         (read_chunks(p, args.chunk_chars) for p in paths),
         vocab_size=args.vocab_size,
         verbose=args.verbose,
+        num_workers=args.workers,
+        piece_chars=args.chunk_chars,
     )
     tokenizer.save(args.out)
     print(f"saved tokenizer ({len(tokenizer.vocab)} tokens) to {args.out}")

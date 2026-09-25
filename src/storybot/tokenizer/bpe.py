@@ -5,6 +5,7 @@ import json
 import re
 from collections import Counter, deque
 from collections.abc import Iterable, Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from pathlib import Path
 
 # Character classes for pre-tokenization. Japanese has no spaces between
@@ -25,6 +26,67 @@ _SPLIT_PATTERN = re.compile(
     rf"""| ?[^\s{_LATIN}{_DIGIT}{_HIRAGANA}{_KATAKANA}{_KANJI}]+"""
     r"""|\s+(?!\S)|\s+"""
 )
+
+_CLASS_PATTERNS = [
+    re.compile(f"[{cls}]") for cls in (_LATIN, _DIGIT, _HIRAGANA, _KATAKANA, _KANJI)
+]
+_SPACE = re.compile(r"\s")
+
+
+def _char_classes(c: str) -> frozenset[int]:
+    """Indices of the pretokenizer character classes c belongs to (5 = the
+    catch-all symbol class). "ー" belongs to two."""
+    found = frozenset(i for i, p in enumerate(_CLASS_PATTERNS) if p.match(c))
+    return found or frozenset((len(_CLASS_PATTERNS),))
+
+
+def _is_safe_split(text: str, i: int) -> bool:
+    """True if pretokenizing text[:i] and text[i:] separately gives exactly
+    the pretokens of text.
+
+    The pattern has no lookbehind, so matching from i is unaffected by what
+    precedes it; it only has to be guaranteed that a pretoken boundary falls
+    at i. That holds when both neighbours are non-space and share no
+    character class (so no run can span them), except after "'", where a
+    contraction such as "'ll" may be in progress.
+    """
+    a, b = text[i - 1], text[i]
+    if a == "'" or _SPACE.match(a) or _SPACE.match(b):
+        return False
+    return not (_char_classes(a) & _char_classes(b))
+
+
+def _safe_pieces(chunks: Iterable[str], target_chars: int) -> Iterator[str]:
+    """Regroup one document's chunks into pieces of about target_chars that
+    can be pretokenized independently (split only at _is_safe_split points).
+    A piece grows past target_chars when no safe point is found."""
+    buf = ""
+    scan_from = target_chars  # cut at the first safe point at or after this
+    for chunk in chunks:
+        buf += chunk
+        while len(buf) > scan_from:
+            cut = next(
+                (
+                    i
+                    for i in range(max(scan_from, 1), len(buf))
+                    if _is_safe_split(buf, i)
+                ),
+                None,
+            )
+            if cut is None:
+                # Wait for more text; don't rescan what was already checked.
+                scan_from = len(buf)
+                break
+            yield buf[:cut]
+            buf = buf[cut:]
+            scan_from = target_chars
+    if buf:
+        yield buf
+
+
+def _count_pretokens(text: str) -> Counter[str]:
+    """Worker task for parallel training (module-level so it can be pickled)."""
+    return Counter(_SPLIT_PATTERN.findall(text))
 
 
 def _bytes_to_unicode() -> dict[int, str]:
@@ -134,11 +196,36 @@ class BPETokenizer:
                 i += 1
         return tuple(new_word)
 
+    @staticmethod
+    def _count_parallel(
+        docs: Iterable[Iterable[str]], num_workers: int, piece_chars: int
+    ) -> Counter[str]:
+        pieces = (
+            piece for chunks in docs for piece in _safe_pieces(chunks, piece_chars)
+        )
+        token_freqs: Counter[str] = Counter()
+        # Keep at most 2 pieces per worker in flight so a large corpus is
+        # never queued into memory ahead of the workers.
+        max_pending = 2 * num_workers
+        with ProcessPoolExecutor(max_workers=num_workers) as pool:
+            pending: set[Future[Counter[str]]] = set()
+            for piece in pieces:
+                pending.add(pool.submit(_count_pretokens, piece))
+                if len(pending) >= max_pending:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for f in done:
+                        token_freqs.update(f.result())
+            for f in pending:
+                token_freqs.update(f.result())
+        return token_freqs
+
     def train(
         self,
         texts: Iterable[str | Iterable[str]],
         vocab_size: int,
         verbose: bool = False,
+        num_workers: int = 1,
+        piece_chars: int = 1 << 20,
     ) -> None:
         """Learn merges from documents.
 
@@ -146,15 +233,22 @@ class BPETokenizer:
         large file read piece by piece), and texts itself may be a generator,
         so the corpus is streamed: only the counts of distinct pretokens are
         kept in memory, never the corpus text.
+
+        With num_workers > 1, pretokenizing and counting run in worker
+        processes on pieces of about piece_chars characters. The learned
+        merges are identical to the single-process result.
         """
         base_symbols = [self.byte_encoder[b] for b in range(256)]
         if vocab_size < len(base_symbols):
             raise ValueError(f"vocab_size must be >= {len(base_symbols)}")
 
-        token_freqs: Counter[str] = Counter()
-        for doc in texts:
-            chunks = (doc,) if isinstance(doc, str) else doc
-            token_freqs.update(self._pretokenize_chunks(chunks))
+        docs = ((doc,) if isinstance(doc, str) else doc for doc in texts)
+        if num_workers > 1:
+            token_freqs = self._count_parallel(docs, num_workers, piece_chars)
+        else:
+            token_freqs = Counter()
+            for chunks in docs:
+                token_freqs.update(self._pretokenize_chunks(chunks))
         word_freqs: dict[tuple[str, ...], int] = {}
         for token, freq in token_freqs.items():
             word = self._to_byte_symbols(token)

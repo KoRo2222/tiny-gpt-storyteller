@@ -165,7 +165,7 @@ def test_incremental_training_matches_full_recount():
 # and mixed scripts.
 TRICKY_TEXT = (
     "We'll see, they're here!!  \n\n\n  むかし  王様は言いました。「すごーい!」\n"
-    "   ドラゴン123と１２３ ｶﾀｶﾅ　全角 I'd've... \t\n end   "
+    "   スーパードラゴン123と１２３ ｶﾀｶﾅ　全角 I'd've... \t\n end   "
 )
 
 
@@ -202,3 +202,34 @@ def test_encode_chunks_matches_encode():
         assert list(tok.encode_chunks(_split(TRICKY_TEXT, size))) == tok.encode(
             TRICKY_TEXT
         )
+
+
+def test_safe_pieces_pretokenize_like_whole_text():
+    from storybot.tokenizer.bpe import _safe_pieces
+
+    tok = BPETokenizer()
+    expected = tok._pretokenize(TRICKY_TEXT)
+    for size in range(1, len(TRICKY_TEXT) + 1):
+        pieces = list(_safe_pieces(_split(TRICKY_TEXT, size), target_chars=size))
+        assert "".join(pieces) == TRICKY_TEXT
+        got = [t for piece in pieces for t in tok._pretokenize(piece)]
+        assert got == expected, size
+    # The test only means something if the text actually gets split.
+    assert len(list(_safe_pieces([TRICKY_TEXT], target_chars=1))) > 10
+
+
+def test_parallel_training_matches_single_process():
+    texts = JA_CORPUS * 5 + [TRICKY_TEXT]
+    single = BPETokenizer()
+    single.train(texts, vocab_size=400)
+
+    parallel = BPETokenizer()
+    parallel.train(
+        (iter(_split(t, 7)) for t in texts),
+        vocab_size=400,
+        num_workers=2,
+        piece_chars=16,
+    )
+
+    assert parallel.merges == single.merges
+    assert parallel.vocab == single.vocab
