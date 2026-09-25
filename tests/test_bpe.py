@@ -158,3 +158,47 @@ def test_incremental_training_matches_full_recount():
         tok = BPETokenizer()
         tok.train(texts, vocab_size=400)
         assert tok.merges == _reference_merges(BPETokenizer(), texts, 400)
+
+
+# Text full of chunk-boundary hazards: contractions ("'ll" split as "'l"),
+# whitespace runs whose split depends on the next char, leading-space tokens,
+# and mixed scripts.
+TRICKY_TEXT = (
+    "We'll see, they're here!!  \n\n\n  むかし  王様は言いました。「すごーい!」\n"
+    "   ドラゴン123と１２３ ｶﾀｶﾅ　全角 I'd've... \t\n end   "
+)
+
+
+def _split(text, size):
+    return [text[i : i + size] for i in range(0, len(text), size)]
+
+
+def test_chunked_pretokenize_matches_whole_text_for_every_chunk_size():
+    tok = BPETokenizer()
+    expected = tok._pretokenize(TRICKY_TEXT)
+    for size in range(1, len(TRICKY_TEXT) + 1):
+        got = list(tok._pretokenize_chunks(_split(TRICKY_TEXT, size)))
+        assert got == expected, size
+
+
+def test_training_on_chunked_generator_matches_whole_strings():
+    texts = JA_CORPUS + [TRICKY_TEXT]
+    whole = BPETokenizer()
+    whole.train(texts, vocab_size=400)
+
+    chunked = BPETokenizer()
+    # A generator of documents, each itself a generator of 7-char chunks:
+    # the corpus is never held as full strings.
+    chunked.train((iter(_split(t, 7)) for t in texts), vocab_size=400)
+
+    assert chunked.merges == whole.merges
+    assert chunked.vocab == whole.vocab
+
+
+def test_encode_chunks_matches_encode():
+    tok = BPETokenizer()
+    tok.train(JA_CORPUS + [TRICKY_TEXT], vocab_size=400)
+    for size in (1, 3, 7, 50):
+        assert list(tok.encode_chunks(_split(TRICKY_TEXT, size))) == tok.encode(
+            TRICKY_TEXT
+        )

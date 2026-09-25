@@ -3,6 +3,8 @@ from __future__ import annotations
 import heapq
 import json
 import re
+from collections import Counter, deque
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 # Character classes for pre-tokenization. Japanese has no spaces between
@@ -79,6 +81,31 @@ class BPETokenizer:
     def _pretokenize(self, text: str) -> list[str]:
         return _SPLIT_PATTERN.findall(text)
 
+    @staticmethod
+    def _pretokenize_chunks(chunks: Iterable[str]) -> Iterator[str]:
+        """Pretokenize one document given as consecutive text chunks.
+
+        Yields exactly what _pretokenize("".join(chunks)) would, without ever
+        holding the whole document. The last two matches of each buffer are
+        held back and re-matched with the next chunk: only they can change
+        once more text arrives (a match that ends at the buffer edge may keep
+        growing, and a contraction like "'ll" cut to "'l" shows up as two
+        short matches). Every earlier match starts at least 3 chars before
+        the edge, so its alternatives and lookahead see the same text either
+        way.
+        """
+        buf = ""
+        for chunk in chunks:
+            buf += chunk
+            held: deque[re.Match[str]] = deque()
+            for m in _SPLIT_PATTERN.finditer(buf):
+                held.append(m)
+                if len(held) > 2:
+                    yield held.popleft().group()
+            if held:
+                buf = buf[held[0].start():]
+        yield from _SPLIT_PATTERN.findall(buf)
+
     def _to_byte_symbols(self, token: str) -> tuple[str, ...]:
         return tuple(self.byte_encoder[b] for b in token.encode("utf-8"))
 
@@ -107,16 +134,32 @@ class BPETokenizer:
                 i += 1
         return tuple(new_word)
 
-    def train(self, texts: list[str], vocab_size: int, verbose: bool = False) -> None:
+    def train(
+        self,
+        texts: Iterable[str | Iterable[str]],
+        vocab_size: int,
+        verbose: bool = False,
+    ) -> None:
+        """Learn merges from documents.
+
+        Each document is either a str or an iterable of str chunks (e.g. a
+        large file read piece by piece), and texts itself may be a generator,
+        so the corpus is streamed: only the counts of distinct pretokens are
+        kept in memory, never the corpus text.
+        """
         base_symbols = [self.byte_encoder[b] for b in range(256)]
         if vocab_size < len(base_symbols):
             raise ValueError(f"vocab_size must be >= {len(base_symbols)}")
 
+        token_freqs: Counter[str] = Counter()
+        for doc in texts:
+            chunks = (doc,) if isinstance(doc, str) else doc
+            token_freqs.update(self._pretokenize_chunks(chunks))
         word_freqs: dict[tuple[str, ...], int] = {}
-        for text in texts:
-            for token in self._pretokenize(text):
-                word = self._to_byte_symbols(token)
-                word_freqs[word] = word_freqs.get(word, 0) + 1
+        for token, freq in token_freqs.items():
+            word = self._to_byte_symbols(token)
+            word_freqs[word] = word_freqs.get(word, 0) + freq
+        del token_freqs
 
         words = list(word_freqs)
         freqs = [word_freqs[w] for w in words]
@@ -208,6 +251,16 @@ class BPETokenizer:
             for symbol in self._bpe_word(word):
                 ids.append(self.vocab[symbol])
         return ids
+
+    def encode_chunks(self, chunks: Iterable[str]) -> Iterator[int]:
+        """Lazily encode one document given as consecutive text chunks.
+
+        Same ids as encode("".join(chunks)), without materializing the text
+        or the full id list; callers can write ids out as they arrive.
+        """
+        for token in self._pretokenize_chunks(chunks):
+            for symbol in self._bpe_word(self._to_byte_symbols(token)):
+                yield self.vocab[symbol]
 
     def encode_with_eot(self, texts: list[str]) -> list[int]:
         """Encode multiple documents into one id stream, EOT-separated.
