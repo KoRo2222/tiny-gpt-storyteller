@@ -25,15 +25,12 @@ class SwiGLU(nn.Module):
     much of each hidden feature to let through. No biases, as in LLaMA.
     """
 
-    def __init__(
-        self, d_model: int, hidden_dim: int | None = None, dropout: float = 0.0
-    ):
+    def __init__(self, d_model: int, hidden_dim: int | None = None):
         super().__init__()
         hidden_dim = hidden_dim or default_hidden_dim(d_model)
         self.w_gate = nn.Linear(d_model, hidden_dim, bias=False)
         self.w_up = nn.Linear(d_model, hidden_dim, bias=False)
         self.w_down = nn.Linear(hidden_dim, d_model, bias=False)
-        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.dropout(self.w_down(F.silu(self.w_gate(x)) * self.w_up(x)))
+        return self.w_down(F.silu(self.w_gate(x)) * self.w_up(x))
