@@ -7,5 +7,6 @@ data/*.bin
 data/*.pt
 data/eval_history.jsonl
 CLAUDE.md
-data/tokens.bin.json
+data/*.bin.json
 data/corpus/
+data/raw/

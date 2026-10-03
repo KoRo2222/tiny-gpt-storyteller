@@ -1,4 +1,8 @@
-"""Pretrain the GPT on data/tokens.bin (next-token prediction).
+"""Pretrain the GPT (next-token prediction).
+
+Trains on data/train.bin and validates on data/val.bin (both written by
+prepare_data.py). Without a validation file, the tail of the training
+tokens is held out instead (--val-fraction).
 
 Usage:
     python scripts/pretrain.py --steps 2000
@@ -26,7 +30,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--tokens", default=str(ROOT / "data" / "tokens.bin"))
+    p.add_argument("--train-tokens", default=str(ROOT / "data" / "train.bin"))
+    p.add_argument("--val-tokens", default=str(ROOT / "data" / "val.bin"))
     p.add_argument("--tokenizer", default=str(ROOT / "data" / "tokenizer.json"))
     p.add_argument("--checkpoint", default=str(ROOT / "data" / "checkpoint.pt"))
     p.add_argument("--resume", action="store_true")
@@ -51,9 +56,13 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
-    train_tokens, val_tokens = split_train_val(
-        load_token_file(args.tokens), args.val_fraction
-    )
+    if Path(args.val_tokens).exists():
+        train_tokens = load_token_file(args.train_tokens)
+        val_tokens = load_token_file(args.val_tokens)
+    else:
+        train_tokens, val_tokens = split_train_val(
+            load_token_file(args.train_tokens), args.val_fraction
+        )
     print(f"tokens: {len(train_tokens)} train / {len(val_tokens)} val")
 
     torch.manual_seed(args.seed)

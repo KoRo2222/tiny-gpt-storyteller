@@ -233,3 +233,24 @@ def test_parallel_training_matches_single_process():
 
     assert parallel.merges == single.merges
     assert parallel.vocab == single.vocab
+
+
+def test_bundle_groups_small_pieces_without_losing_any():
+    from storybot.tokenizer.bpe import _bundle
+
+    pieces = [f"話{i}" * (i % 5 + 1) for i in range(100)]
+    bundles = list(_bundle(pieces, target_chars=60))  # 600 chars -> ~10 bundles
+    assert [p for b in bundles for p in b] == pieces
+    assert len(bundles) < len(pieces) / 5  # far fewer tasks than pieces
+    assert all(sum(map(len, b)) >= 60 for b in bundles[:-1])
+
+
+def test_parallel_training_on_many_short_docs_matches_single_process():
+    # Many tiny documents are bundled into few worker tasks; documents must
+    # still be pretokenized separately (never glued together).
+    texts = [f"{w}は城に行きました。" for w in ("王様", "猫", "ドラゴン", "旅人")] * 50
+    single = BPETokenizer()
+    single.train(texts, vocab_size=320)
+    parallel = BPETokenizer()
+    parallel.train(texts, vocab_size=320, num_workers=2, piece_chars=200)
+    assert parallel.merges == single.merges

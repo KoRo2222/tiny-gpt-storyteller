@@ -84,9 +84,29 @@ def _safe_pieces(chunks: Iterable[str], target_chars: int) -> Iterator[str]:
         yield buf
 
 
-def _count_pretokens(text: str) -> Counter[str]:
-    """Worker task for parallel training (module-level so it can be pickled)."""
-    return Counter(_SPLIT_PATTERN.findall(text))
+def _count_pretokens(texts: list[str]) -> Counter[str]:
+    """Worker task for parallel training (module-level so it can be pickled).
+    Each text is pretokenized on its own: they are independent pieces."""
+    counts: Counter[str] = Counter()
+    for text in texts:
+        counts.update(_SPLIT_PATTERN.findall(text))
+    return counts
+
+
+def _bundle(pieces: Iterable[str], target_chars: int) -> Iterator[list[str]]:
+    """Group pieces into lists of about target_chars, so a corpus of many
+    short documents is sent to workers in a few large tasks rather than
+    one task (and one round of pickling) per document."""
+    bundle: list[str] = []
+    size = 0
+    for piece in pieces:
+        bundle.append(piece)
+        size += len(piece)
+        if size >= target_chars:
+            yield bundle
+            bundle, size = [], 0
+    if bundle:
+        yield bundle
 
 
 def _bytes_to_unicode() -> dict[int, str]:
@@ -204,13 +224,13 @@ class BPETokenizer:
             piece for chunks in docs for piece in _safe_pieces(chunks, piece_chars)
         )
         token_freqs: Counter[str] = Counter()
-        # Keep at most 2 pieces per worker in flight so a large corpus is
+        # Keep at most 2 bundles per worker in flight so a large corpus is
         # never queued into memory ahead of the workers.
         max_pending = 2 * num_workers
         with ProcessPoolExecutor(max_workers=num_workers) as pool:
             pending: set[Future[Counter[str]]] = set()
-            for piece in pieces:
-                pending.add(pool.submit(_count_pretokens, piece))
+            for bundle in _bundle(pieces, piece_chars):
+                pending.add(pool.submit(_count_pretokens, bundle))
                 if len(pending) >= max_pending:
                     done, pending = wait(pending, return_when=FIRST_COMPLETED)
                     for f in done:
