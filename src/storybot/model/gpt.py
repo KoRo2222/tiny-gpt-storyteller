@@ -102,7 +102,8 @@ class GPT(nn.Module):
         logits, _ = self.forward_with_cache(idx)
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
+            # log-softmax over the vocab in float32 even under autocast.
+            loss = F.cross_entropy(logits.flatten(0, 1).float(), targets.flatten())
         return logits, loss
 
     @torch.no_grad()

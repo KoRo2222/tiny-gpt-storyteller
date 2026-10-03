@@ -11,6 +11,13 @@ from .rope import RotaryEmbedding
 KVCache = tuple[torch.Tensor, torch.Tensor]
 
 
+def attention_weights(scores: torch.Tensor) -> torch.Tensor:
+    """Softmax over keys, computed in float32 even under bf16/fp16 autocast
+    (CPU autocast would otherwise keep it in bf16, where exp() of
+    low-precision scores loses most of the small attention weights)."""
+    return scores.float().softmax(dim=-1)
+
+
 class CausalSelfAttention(nn.Module):
     """Multi-head causal self-attention with rotary position embedding.
 
@@ -52,7 +59,7 @@ class CausalSelfAttention(nn.Module):
         q_pos = torch.arange(past_len, past_len + seq_len, device=x.device)
         k_pos = torch.arange(past_len + seq_len, device=x.device)
         scores = scores.masked_fill(k_pos[None, :] > q_pos[:, None], float("-inf"))
-        attn = scores.softmax(dim=-1)
+        attn = attention_weights(scores).to(v.dtype)
 
         y = (attn @ v).transpose(1, 2).reshape(batch, seq_len, d_model)
         return self.out(y), (k, v)

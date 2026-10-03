@@ -45,8 +45,11 @@ class RotaryEmbedding(nn.Module):
                 f"positions up to {offset + seq_len} exceed max_seq_len "
                 f"{self.max_seq_len}"
             )
-        cos = self.cos[offset : offset + seq_len].to(x.dtype)
-        sin = self.sin[offset : offset + seq_len].to(x.dtype)
-        x1, x2 = x.chunk(2, dim=-1)
+        cos = self.cos[offset : offset + seq_len]
+        sin = self.sin[offset : offset + seq_len]
+        # Rotate in float32 even for half-precision inputs: bf16 cos/sin are
+        # only accurate to ~3 digits, and the error would differ per position.
+        x1, x2 = x.float().chunk(2, dim=-1)
         # 2D rotation of each (x1[i], x2[i]) pair.
-        return torch.cat((x1 * cos - x2 * sin, x1 * sin + x2 * cos), dim=-1)
+        out = torch.cat((x1 * cos - x2 * sin, x1 * sin + x2 * cos), dim=-1)
+        return out.to(x.dtype)
