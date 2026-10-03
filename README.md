@@ -13,11 +13,12 @@ BPEトークナイザーからTransformerモデル、学習まで全てゼロか
   - 残差に書き込む射影の初期値を層数に応じて縮小(GPT-2方式)
   - KVキャッシュ付きの生成(温度・top-k・`<|endoftext|>`での停止)
   - 混合精度でも数値が崩れやすい箇所(Attentionのsoftmax、RoPEの回転、RMSNormの統計量、損失)はfloat32で計算
-- **学習**(`src/storybot/train`) — 学習率スケジュールはD2Z(Decay-to-Zero)。線形ウォームアップでピークまで上げた後、最終ステップでちょうど0になるよう線形に減衰させる。混合精度学習(autocastでbf16/fp16計算、重みとオプティマイザー状態はfloat32のまま、fp16では勾配スケーリングを行いクリップ前にunscale)。`auto`指定ではGPUならbf16(非対応ならfp16)、CPUならfp32を選ぶ(bf16命令を持たないCPUではbf16の方が大幅に遅いため)
+- **データ**(`src/storybot/data`) — コーパスをストリーミングでトークン化し、文書を`<|endoftext|>`で区切った1本のトークン列としてバイナリ(語彙が収まればuint16)に書き出す。学習時はメモリマップで読み、末尾の一定割合を検証用に分離(訓練と重ならない)。訓練バッチはランダム位置の窓、評価は毎回同じ固定の窓
+- **学習**(`src/storybot/train`) — 次トークン予測による事前学習。AdamW(重み減衰は行列のみ、RMSNormのゲインには掛けない)。学習率スケジュールはD2Z(Decay-to-Zero)。線形ウォームアップでピークまで上げた後、最終ステップでちょうど0になるよう線形に減衰させる。混合精度学習(autocastでbf16/fp16計算、重みとオプティマイザー状態はfloat32のまま、fp16では勾配スケーリングを行いクリップ前にunscale)。`auto`指定ではGPUならbf16(非対応ならfp16)、CPUならfp32を選ぶ(bf16命令を持たないCPUではbf16の方が大幅に遅いため)。一定間隔で検証損失を測り、モデル・オプティマイザー・スケジューラー・バッチ乱数の状態をチェックポイントに保存。中断後に再開しても、中断しなかった場合と同じ結果になる
 
 ## 現状
 
-トークナイザー、モデル本体、学習率スケジュール(D2Z)、混合精度の学習ステップを実装済み。事前学習ループ・語り部としての対話部分はこれから。
+トークナイザー、モデル本体、事前学習の一式(データ準備・学習ループ・チェックポイント・生成)を実装済み。物語コーパスでの本格的な事前学習と、語り部としての対話部分はこれから。
 
 ## セットアップ
 
@@ -27,8 +28,17 @@ python -m venv .venv
 .venv/Scripts/pip install torch --index-url https://download.pytorch.org/whl/cpu
 .venv/Scripts/pip install -r requirements.txt
 
-# data/corpus 以下のコーパスで学習し、data/tokenizer.json に保存
+# data/corpus 以下の .txt(1ファイル=1文書)でトークナイザーを学習し、data/tokenizer.json に保存
 .venv/Scripts/python scripts/train_tokenizer.py --vocab-size 1024
+
+# コーパスをトークン化し、data/tokens.bin に保存
+.venv/Scripts/python scripts/prepare_data.py
+
+# 事前学習(data/checkpoint.pt に保存。--resume で中断したところから再開)
+.venv/Scripts/python scripts/pretrain.py --steps 2000
+
+# 学習済みチェックポイントから物語を生成
+.venv/Scripts/python scripts/generate.py --prompt "むかしむかし、"
 
 # テスト実行
 .venv/Scripts/python -m pytest tests/ -v
