@@ -11,3 +11,4 @@ data/*.bin.json
 data/corpus/
 data/raw/
 data/*.log
+data/dpo/
