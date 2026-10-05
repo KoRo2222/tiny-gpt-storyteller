@@ -17,13 +17,17 @@ class Candidate:
     finished: bool  # the model emitted <|endoftext|> within the token budget
 
 
-def story_openings(path: str | Path, n: int, field: str = "text_ja") -> list[str]:
-    """First sentence of each of the first n stories in a JSONL corpus, as
-    prompts the model continues. Stories without a usable first sentence
-    are skipped."""
+def story_openings(
+    path: str | Path, n: int, field: str = "text_ja", skip: int = 0
+) -> list[str]:
+    """First sentence of each of n stories in a JSONL corpus (after skipping
+    the first `skip` lines), as prompts the model continues. Stories without
+    a usable first sentence are skipped."""
     openings = []
     with Path(path).open(encoding="utf-8") as f:
-        for line in f:
+        for i, line in enumerate(f):
+            if i < skip:
+                continue
             if len(openings) >= n:
                 break
             text = (json.loads(line).get(field) or "").strip()

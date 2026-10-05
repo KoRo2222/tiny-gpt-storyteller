@@ -220,3 +220,10 @@ def test_sample_candidates_strip_prompt_and_mark_finished():
         ("笑いました。", True),
     ]
     assert [c.text for c in distinct_candidates(cands)] == ["笑いました。", "歌い歌い歌い"]
+
+
+def test_story_openings_skip_leaves_earlier_stories_out(tmp_path):
+    path = tmp_path / "s.jsonl"
+    rows = [{"text_ja": f"{i}番目の話です。続き。"} for i in range(5)]
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    assert story_openings(path, 2, skip=3) == ["3番目の話です。", "4番目の話です。"]
