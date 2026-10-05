@@ -27,7 +27,21 @@ BPEトークナイザーからTransformerモデル、学習まで全てゼロか
 
 TinyStories-JAの訓練データ1/4(約53万話、1.39億トークン)のうち約1,600万トークンを使い、約900万パラメータのモデル(d=256、6層、8ヘッド、語彙8,000)をCPUで約1時間事前学習した。検証損失は2.09(パープレキシティ8.1)。「むかしむかし、ルーシーという名前の小さな女の子がいました。」のような童話らしい文体と、文法的に自然な日本語の文は書けるが、文をまたいだ話の筋(誰が何をしているか)はまだ崩れやすい。
 
-選好データを大量に作ってのDPOの本番学習と、語り部としての対話部分(前の晩の続きを語る仕組み)はこれから。
+事前学習済みモデルの生成からルール判定で選好ペア301組を作り(検証データの書き出し500個 × 続き8本)、DPO(β=0.1、学習率1e-5、3エポック、CPUで約3分)をかけた。ペアに使っていない書き出し100個 × 2本で比べた結果は次のとおり。
+
+| 指標 | DPO前 | DPO後 |
+|---|---|---|
+| 同じ文の繰り返しの割合 | 3.6% | 0.5% |
+| 文字6-gramの重複率 | 7.2% | 5.7% |
+| 最後まで書き終えた割合 | 96.0% | 99.5% |
+| 文の途中で終わった割合 | 1.6% | 0.5% |
+| 書き出しの登場人物が消えた割合 | 25.0% | 25.6% |
+| 平均の長さ(文字) | 365 | 305 |
+| 事前学習の検証損失 | 2.094 | 2.103 |
+
+ルールで測れる欠点(繰り返し、途中での終わり)ははっきり減った。一方、登場人物の一貫性は変わらず、話は16%短くなった。ペアの長さは良い方と悪い方でほぼ同じ(平均347字と352字)なので長さ自体を好むよう学習したわけではないが、短い話ほど繰り返しが起きにくいことが効いている可能性がある。話の筋の良し悪しはルールでは判定できないため、この点の改善は別の判定方法が必要。
+
+語り部としての対話部分(前の晩の続きを語る仕組み)はこれから。
 
 ## セットアップ
 
@@ -56,9 +70,10 @@ curl -L -o data/raw/validation-00000-of-00001.jsonl https://huggingface.co/datas
 
 # DPO用の選好ペアを作成(data/dpo/pairs.jsonl に追記)。--judge llm / both は Claude API の認証情報(ANTHROPIC_API_KEY 等)が必要
 .venv/Scripts/python scripts/make_pairs.py --judge rule --num-prompts 500 --samples 8 --min-gap 0.1
+.venv/Scripts/python scripts/dpo.py --pairs data/dpo/pairs.jsonl --epochs 3 --lr 1e-5
 
-# DPO(1行1組の {"prompt", "chosen", "rejected"} JSONLで、data/checkpoint.pt を微調整し data/checkpoint_dpo.pt に保存)
-.venv/Scripts/python scripts/dpo.py --pairs data/dpo/pairs.jsonl
+# 物語の質をルール指標で評価(DPO前後の比較など)
+.venv/Scripts/python scripts/eval_stories.py --checkpoint data/checkpoint_dpo.pt
 
 # 学習済みチェックポイントから物語を生成
 .venv/Scripts/python scripts/generate.py --prompt "むかしむかし、"
